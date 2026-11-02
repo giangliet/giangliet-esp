@@ -1,545 +1,460 @@
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
+local P, RS, UIS, W = game:GetService("Players"), game:GetService("RunService"), game:GetService("UserInputService"), game:GetService("Workspace")
+local lp, cam = P.LocalPlayer, W.CurrentCamera
+local function N(c, p) local i = Instance.new(c) for k, v in pairs(p) do i[k] = v end return i end
 
-local localPlayer = Players.LocalPlayer
-local camera = Workspace.CurrentCamera
-local playerGui = localPlayer:WaitForChild("PlayerGui")
+-- Xóa bản cũ nếu chạy lại nhiều lần
+if lp:WaitForChild("PlayerGui"):FindFirstChild("GiangLiet_ESP_Gui") then
+	pcall(function() RS:UnbindFromRenderStep("GiangLiet_Render") end)
+	lp.PlayerGui.GiangLiet_ESP_Gui:Destroy()
+end
 
--- ScreenGui chứa toàn bộ ESP và Menu
-local mainScreenGui = Instance.new("ScreenGui")
-mainScreenGui.Name = "GiangLiet_ESP_Gui"
-mainScreenGui.IgnoreGuiInset = true
-mainScreenGui.ResetOnSpawn = false
-mainScreenGui.Parent = playerGui
+local gui = N("ScreenGui", {Name = "GiangLiet_ESP_Gui", IgnoreGuiInset = true, ResetOnSpawn = false, Parent = lp:WaitForChild("PlayerGui")})
+local folder = N("Frame", {Name = "GiangLiet_ESP_Elements", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, Parent = gui})
 
-local espContainer = Instance.new("Folder")
-espContainer.Name = "GiangLiet_ESP_Elements"
-espContainer.Parent = mainScreenGui
+local hasMouseMoveRel = (typeof(mousemoverel) == "function")
 
--- ==========================================
--- 1. CẤU HÌNH & TRẠNG THÁI (SETTINGS)
--- ==========================================
-local CONFIG = {
-	MenuTitle = "GIANG LIỆT ESP",
+local CFG = {
+	Title = "GIANG LIỆT ESP",
+	-- Cấu hình ESP
 	Enabled = true,
 	ShowBox = true,
 	ShowInfo = true,
 	ShowSkeleton = true,
 	ColorByHP = false,
-
 	BoxColor = Color3.fromRGB(0, 255, 127),
-	SkeletonColor = Color3.fromRGB(255, 255, 255),
-	TextColor = Color3.fromRGB(255, 255, 255),
+	SkeletonColor = Color3.new(1, 1, 1),
+	TextColor = Color3.new(1, 1, 1),
 
-	BoxThickness = 1.5,
-	SkeletonThickness = 1.5,
-	TextSize = 13,
+	-- Cấu hình Aimlock & FOV
+	AimEnabled = false,
+	AimMethod = hasMouseMoveRel and 1 or 2, -- 1: Kéo chuột (Chuẩn tay súng), 2: Khóa Camera
+	AimSpeed = 5, -- Tốc độ kéo tâm (1 -> 10)
+	ShowFOV = true,
+	FOVRadius = 120,
+	FOVColor = Color3.fromRGB(255, 255, 255),
+	AimPartMode = 1, -- 1: Đầu, 2: Thân, 3: Chân, 4: Gần tâm nhất
+	AimBindType = "Mouse",
+	AimBind = Enum.UserInputType.MouseButton2,
 
-	ToggleKey = Enum.KeyCode.RightShift, -- Phím đóng/mở mặc định
+	-- Phím đóng/mở Menu
+	Key = Enum.KeyCode.RightShift
 }
 
-local isBindingKey = false
-
--- Bảng màu mẫu để chuyển đổi nhanh trên GUI
-local COLOR_PALETTE = {
-	{Name = "Xanh lá", Color = Color3.fromRGB(0, 255, 127)},
-	{Name = "Trắng", Color = Color3.fromRGB(255, 255, 255)},
-	{Name = "Đỏ", Color = Color3.fromRGB(255, 65, 65)},
-	{Name = "Vàng", Color = Color3.fromRGB(255, 230, 0)},
-	{Name = "Xanh dương", Color = Color3.fromRGB(0, 190, 255)},
-	{Name = "Tím", Color = Color3.fromRGB(185, 80, 255)},
-	{Name = "Cam", Color = Color3.fromRGB(255, 140, 0)},
+local AIM_PARTS = {
+	{Name = "Đầu (Head)", Mode = "Head"},
+	{Name = "Thân (Torso)", Mode = "Torso"},
+	{Name = "Chân (Leg)", Mode = "Leg"},
+	{Name = "Gần tâm nhất", Mode = "Closest"}
 }
 
+local AIM_METHODS = {
+	"Chuột (Chuẩn súng)",
+	"Camera + Xoay người"
+}
+
+local PAL = {
+	{N = "Xanh lá", C = Color3.fromRGB(0, 255, 127)},
+	{N = "Trắng", C = Color3.new(1, 1, 1)},
+	{N = "Đỏ", C = Color3.fromRGB(255, 65, 65)},
+	{N = "Vàng", C = Color3.fromRGB(255, 230, 0)},
+	{N = "Xanh dương", C = Color3.fromRGB(0, 190, 255)},
+	{N = "Tím", C = Color3.fromRGB(185, 80, 255)},
+	{N = "Cam", C = Color3.fromRGB(255, 140, 0)}
+}
+
+local bindingMenuKey, bindingAimKey, active = false, false, {}
+
+-- Vòng tròn FOV
+local fovCircle = N("Frame", {
+	Name = "FOVCircle",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(CFG.FOVRadius * 2, CFG.FOVRadius * 2),
+	BackgroundTransparency = 1,
+	Visible = CFG.ShowFOV,
+	Parent = folder
+})
+N("UICorner", {CornerRadius = UDim.new(1, 0), Parent = fovCircle})
+local fovStroke = N("UIStroke", {Color = CFG.FOVColor, Thickness = 1.5, Parent = fovCircle})
+
 -- ==========================================
--- 2. KHỞI TẠO GIAO DIỆN ĐIỀU KHIỂN (MENU GUI)
+-- GIAO DIỆN MENU ĐIỀU KHIỂN
 -- ==========================================
-local menuFrame = Instance.new("Frame")
-menuFrame.Name = "GiangLiet_ControlPanel"
-menuFrame.Size = UDim2.fromOffset(265, 376)
-menuFrame.Position = UDim2.new(0, 30, 0.5, -188)
-menuFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-menuFrame.BorderSizePixel = 0
-menuFrame.Active = true
-menuFrame.Parent = mainScreenGui
+local menu = N("Frame", {Size = UDim2.fromOffset(285, 430), Position = UDim2.new(0, 30, 0.5, -215), BackgroundColor3 = Color3.fromRGB(25, 25, 30), Active = true, Parent = gui})
+N("UICorner", {CornerRadius = UDim.new(0, 8), Parent = menu})
+N("UIStroke", {Color = Color3.fromRGB(60, 60, 70), Parent = menu})
 
-local menuCorner = Instance.new("UICorner")
-menuCorner.CornerRadius = UDim.new(0, 8)
-menuCorner.Parent = menuFrame
+local top = N("Frame", {Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = Color3.fromRGB(35, 35, 42), Parent = menu})
+N("UICorner", {CornerRadius = UDim.new(0, 8), Parent = top})
+local titleLbl = N("TextLabel", {Size = UDim2.new(1, -20, 1, 0), Position = UDim2.fromOffset(10, 0), BackgroundTransparency = 1, Text = CFG.Title.." ["..CFG.Key.Name.."]", TextColor3 = Color3.fromRGB(0, 255, 127), Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, Parent = top})
 
-local menuStroke = Instance.new("UIStroke")
-menuStroke.Color = Color3.fromRGB(60, 60, 70)
-menuStroke.Thickness = 1
-menuStroke.Parent = menuFrame
-
--- Thanh tiêu đề (Dùng để kéo thả Menu)
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 34)
-titleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
-titleBar.BorderSizePixel = 0
-titleBar.Parent = menuFrame
-
-local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 8)
-titleCorner.Parent = titleBar
-
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -20, 1, 0)
-titleLabel.Position = UDim2.fromOffset(10, 0)
-titleLabel.BackgroundTransparency = 1
-titleLabel.Text = CONFIG.MenuTitle .. " [" .. CONFIG.ToggleKey.Name .. "]"
-titleLabel.TextColor3 = Color3.fromRGB(0, 255, 127)
-titleLabel.Font = Enum.Font.GothamBold
-titleLabel.TextSize = 13
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Parent = titleBar
-
--- Tính năng kéo thả cửa sổ Menu
-local dragging, dragInput, dragStart, startPos
-titleBar.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		dragging = true
-		dragStart = input.Position
-		startPos = menuFrame.Position
-		input.Changed:Connect(function()
-			if input.UserInputState == Enum.UserInputState.End then
-				dragging = false
-			end
-		end)
+local drag, dInput, dStart, sPos
+top.InputBegan:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+		drag, dStart, sPos = true, inp.Position, menu.Position
+		inp.Changed:Connect(function() if inp.UserInputState == Enum.UserInputState.End then drag = false end end)
+	end
+end)
+top.InputChanged:Connect(function(inp)
+	if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then dInput = inp end
+end)
+UIS.InputChanged:Connect(function(inp)
+	if inp == dInput and drag then
+		local d = inp.Position - dStart
+		menu.Position = UDim2.new(sPos.X.Scale, sPos.X.Offset + d.X, sPos.Y.Scale, sPos.Y.Offset + d.Y)
 	end
 end)
 
-titleBar.InputChanged:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-		dragInput = input
+local holder = N("ScrollingFrame", {
+	Size = UDim2.new(1, -16, 1, -44),
+	Position = UDim2.fromOffset(8, 40),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 4,
+	ScrollBarImageColor3 = Color3.fromRGB(0, 255, 127),
+	CanvasSize = UDim2.new(0, 0, 0, 620),
+	Parent = menu
+})
+local listLayout = N("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = holder})
+listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	holder.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 10)
+end)
+
+local function makeRow(txt, order)
+	local b = N("TextButton", {LayoutOrder = order, Size = UDim2.new(1, -6, 0, 30), BackgroundColor3 = Color3.fromRGB(40, 40, 48), Text = "", AutoButtonColor = false, Parent = holder})
+	N("UICorner", {CornerRadius = UDim.new(0, 6), Parent = b})
+	N("TextLabel", {Size = UDim2.new(1, -115, 1, 0), Position = UDim2.fromOffset(10, 0), BackgroundTransparency = 1, Text = txt, TextColor3 = Color3.fromRGB(220, 220, 220), Font = Enum.Font.GothamMedium, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = b})
+	return b
+end
+
+local function addToggle(txt, k, order)
+	local b = makeRow(txt, order)
+	local st = N("Frame", {Size = UDim2.fromOffset(40, 20), Position = UDim2.new(1, -48, 0.5, -10), BackgroundColor3 = Color3.fromRGB(0, 200, 100), Parent = b})
+	N("UICorner", {CornerRadius = UDim.new(1, 0), Parent = st})
+	local function upd() st.BackgroundColor3 = CFG[k] and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(80, 80, 90) end
+	b.MouseButton1Click:Connect(function() CFG[k] = not CFG[k] upd() end)
+	upd()
+end
+
+local function addColor(txt, k, idx, order)
+	local b = makeRow(txt, order)
+	local prv = N("TextLabel", {Size = UDim2.fromOffset(80, 20), Position = UDim2.new(1, -88, 0.5, -10), Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = Color3.fromRGB(20, 20, 20), Parent = b})
+	N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = prv})
+	local function set() CFG[k], prv.BackgroundColor3, prv.Text = PAL[idx].C, PAL[idx].C, PAL[idx].N end
+	b.MouseButton1Click:Connect(function() idx = (idx % #PAL) + 1 set() end)
+	set()
+end
+
+-- Các mục ESP
+addToggle("Bật toàn bộ ESP", "Enabled", 1)
+addToggle("Hiện Khung chữ nhật (Box)", "ShowBox", 2)
+addToggle("Hiện Tên, HP & Khoảng cách", "ShowInfo", 3)
+addToggle("Hiện Xương bộ phận (Que)", "ShowSkeleton", 4)
+addToggle("Màu khung tự đổi theo % HP", "ColorByHP", 5)
+addColor("Màu Khung:", "BoxColor", 1, 6)
+addColor("Màu Xương:", "SkeletonColor", 2, 7)
+addColor("Màu Chữ:", "TextColor", 2, 8)
+
+-- Các mục Aimlock & FOV
+addToggle("Bật Aimlock", "AimEnabled", 9)
+
+local methodRow = makeRow("Kiểu Aim:", 10)
+local methodBadge = N("TextLabel", {Size = UDim2.fromOffset(110, 20), Position = UDim2.new(1, -118, 0.5, -10), BackgroundColor3 = Color3.fromRGB(60, 60, 72), Font = Enum.Font.GothamBold, TextSize = 10, TextColor3 = Color3.fromRGB(0, 255, 127), Text = AIM_METHODS[CFG.AimMethod], Parent = methodRow})
+N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = methodBadge})
+methodRow.MouseButton1Click:Connect(function()
+	CFG.AimMethod = (CFG.AimMethod % #AIM_METHODS) + 1
+	methodBadge.Text = AIM_METHODS[CFG.AimMethod]
+end)
+
+-- Tốc độ / Độ nhạy kéo tâm
+local spdRow = makeRow("Độ nhạy kéo tâm:", 11)
+local spdMinus = N("TextButton", {Size = UDim2.fromOffset(24, 22), Position = UDim2.new(1, -98, 0.5, -11), BackgroundColor3 = Color3.fromRGB(60, 60, 72), Text = "-", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 14, Parent = spdRow})
+N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = spdMinus})
+local spdValLbl = N("TextLabel", {Size = UDim2.fromOffset(40, 22), Position = UDim2.new(1, -72, 0.5, -11), BackgroundTransparency = 1, Text = tostring(CFG.AimSpeed).."/10", TextColor3 = Color3.fromRGB(0, 255, 127), Font = Enum.Font.GothamBold, TextSize = 12, Parent = spdRow})
+local spdPlus = N("TextButton", {Size = UDim2.fromOffset(24, 22), Position = UDim2.new(1, -30, 0.5, -11), BackgroundColor3 = Color3.fromRGB(60, 60, 72), Text = "+", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 14, Parent = spdRow})
+N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = spdPlus})
+
+spdMinus.MouseButton1Click:Connect(function()
+	CFG.AimSpeed = math.clamp(CFG.AimSpeed - 1, 1, 10)
+	spdValLbl.Text = tostring(CFG.AimSpeed).."/10"
+end)
+spdPlus.MouseButton1Click:Connect(function()
+	CFG.AimSpeed = math.clamp(CFG.AimSpeed + 1, 1, 10)
+	spdValLbl.Text = tostring(CFG.AimSpeed).."/10"
+end)
+
+addToggle("Hiện viền vòng tròn FOV", "ShowFOV", 12)
+
+local fovRow = makeRow("Kích thước FOV:", 13)
+local btnMinus = N("TextButton", {Size = UDim2.fromOffset(24, 22), Position = UDim2.new(1, -98, 0.5, -11), BackgroundColor3 = Color3.fromRGB(60, 60, 72), Text = "-", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 14, Parent = fovRow})
+N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = btnMinus})
+local fovValLbl = N("TextLabel", {Size = UDim2.fromOffset(40, 22), Position = UDim2.new(1, -72, 0.5, -11), BackgroundTransparency = 1, Text = tostring(CFG.FOVRadius), TextColor3 = Color3.fromRGB(0, 255, 127), Font = Enum.Font.GothamBold, TextSize = 12, Parent = fovRow})
+local btnPlus = N("TextButton", {Size = UDim2.fromOffset(24, 22), Position = UDim2.new(1, -30, 0.5, -11), BackgroundColor3 = Color3.fromRGB(60, 60, 72), Text = "+", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 14, Parent = fovRow})
+N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = btnPlus})
+
+btnMinus.MouseButton1Click:Connect(function()
+	CFG.FOVRadius = math.clamp(CFG.FOVRadius - 15, 30, 500)
+	fovValLbl.Text = tostring(CFG.FOVRadius)
+end)
+btnPlus.MouseButton1Click:Connect(function()
+	CFG.FOVRadius = math.clamp(CFG.FOVRadius + 15, 30, 500)
+	fovValLbl.Text = tostring(CFG.FOVRadius)
+end)
+
+local partRow = makeRow("Vùng Aimlock:", 14)
+local partBadge = N("TextLabel", {Size = UDim2.fromOffset(90, 20), Position = UDim2.new(1, -98, 0.5, -10), BackgroundColor3 = Color3.fromRGB(60, 60, 72), Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = Color3.fromRGB(0, 255, 127), Text = AIM_PARTS[CFG.AimPartMode].Name, Parent = partRow})
+N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = partBadge})
+partRow.MouseButton1Click:Connect(function()
+	CFG.AimPartMode = (CFG.AimPartMode % #AIM_PARTS) + 1
+	partBadge.Text = AIM_PARTS[CFG.AimPartMode].Name
+end)
+
+addColor("Màu vòng FOV:", "FOVColor", 2, 15)
+
+local aimKeyRow = makeRow("Phím giữ Aimlock:", 16)
+local aimKeyBadge = N("TextLabel", {Size = UDim2.fromOffset(90, 20), Position = UDim2.new(1, -98, 0.5, -10), BackgroundColor3 = Color3.fromRGB(60, 60, 72), Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = Color3.fromRGB(240, 240, 240), Text = "MouseButton2", Parent = aimKeyRow})
+N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = aimKeyBadge})
+aimKeyRow.MouseButton1Click:Connect(function()
+	if not bindingAimKey and not bindingMenuKey then
+		bindingAimKey, aimKeyBadge.Text, aimKeyBadge.BackgroundColor3, aimKeyBadge.TextColor3 = true, "[Nhấn phím...]", Color3.fromRGB(230, 150, 0), Color3.fromRGB(20, 20, 20)
 	end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-	if input == dragInput and dragging then
-		local delta = input.Position - dragStart
-		menuFrame.Position = UDim2.new(
-			startPos.X.Scale,
-			startPos.X.Offset + delta.X,
-			startPos.Y.Scale,
-			startPos.Y.Offset + delta.Y
-		)
+local kbBtn = makeRow("Phím đóng/mở Menu:", 17)
+local kbBadge = N("TextLabel", {Size = UDim2.fromOffset(90, 20), Position = UDim2.new(1, -98, 0.5, -10), BackgroundColor3 = Color3.fromRGB(60, 60, 72), Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = Color3.fromRGB(240, 240, 240), Text = CFG.Key.Name, Parent = kbBtn})
+N("UICorner", {CornerRadius = UDim.new(0, 4), Parent = kbBadge})
+kbBtn.MouseButton1Click:Connect(function()
+	if not bindingMenuKey and not bindingAimKey then
+		bindingMenuKey, kbBadge.Text, kbBadge.BackgroundColor3, kbBadge.TextColor3 = true, "[Nhấn phím...]", Color3.fromRGB(230, 150, 0), Color3.fromRGB(20, 20, 20)
 	end
 end)
 
--- Danh sách chứa các nút chức năng
-local contentHolder = Instance.new("Frame")
-contentHolder.Size = UDim2.new(1, -20, 1, -44)
-contentHolder.Position = UDim2.fromOffset(10, 40)
-contentHolder.BackgroundTransparency = 1
-contentHolder.Parent = menuFrame
-
-local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 6)
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent = contentHolder
-
--- Hàm tạo nút Bật/Tắt (Toggle)
-local function createToggle(labelText, configKey, order)
-	local btn = Instance.new("TextButton")
-	btn.LayoutOrder = order
-	btn.Size = UDim2.new(1, 0, 0, 30)
-	btn.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
-	btn.Text = ""
-	btn.AutoButtonColor = false
-	btn.Parent = contentHolder
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 6)
-	corner.Parent = btn
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, -60, 1, 0)
-	label.Position = UDim2.fromOffset(10, 0)
-	label.BackgroundTransparency = 1
-	label.Text = labelText
-	label.TextColor3 = Color3.fromRGB(220, 220, 220)
-	label.Font = Enum.Font.GothamMedium
-	label.TextSize = 13
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Parent = btn
-
-	local statusBox = Instance.new("Frame")
-	statusBox.Size = UDim2.fromOffset(40, 20)
-	statusBox.Position = UDim2.new(1, -48, 0.5, -10)
-	statusBox.BorderSizePixel = 0
-	statusBox.Parent = btn
-
-	local statusCorner = Instance.new("UICorner")
-	statusCorner.CornerRadius = UDim.new(1, 0)
-	statusCorner.Parent = statusBox
-
-	local function updateVisual()
-		if CONFIG[configKey] then
-			statusBox.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
-		else
-			statusBox.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-		end
-	end
-
-	btn.MouseButton1Click:Connect(function()
-		CONFIG[configKey] = not CONFIG[configKey]
-		updateVisual()
-	end)
-
-	updateVisual()
-end
-
--- Hàm tạo nút Đổi Màu (Cycle qua bảng màu)
-local function createColorSelector(labelText, configKey, defaultIndex, order)
-	local currentIndex = defaultIndex
-	local btn = Instance.new("TextButton")
-	btn.LayoutOrder = order
-	btn.Size = UDim2.new(1, 0, 0, 30)
-	btn.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
-	btn.Text = ""
-	btn.AutoButtonColor = false
-	btn.Parent = contentHolder
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 6)
-	corner.Parent = btn
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, -90, 1, 0)
-	label.Position = UDim2.fromOffset(10, 0)
-	label.BackgroundTransparency = 1
-	label.Text = labelText
-	label.TextColor3 = Color3.fromRGB(220, 220, 220)
-	label.Font = Enum.Font.GothamMedium
-	label.TextSize = 13
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Parent = btn
-
-	local colorPreview = Instance.new("TextLabel")
-	colorPreview.Size = UDim2.fromOffset(75, 20)
-	colorPreview.Position = UDim2.new(1, -83, 0.5, -10)
-	colorPreview.Font = Enum.Font.GothamBold
-	colorPreview.TextSize = 11
-	colorPreview.TextColor3 = Color3.fromRGB(20, 20, 20)
-	colorPreview.Parent = btn
-
-	local previewCorner = Instance.new("UICorner")
-	previewCorner.CornerRadius = UDim.new(0, 4)
-	previewCorner.Parent = colorPreview
-
-	local function applyColor()
-		local entry = COLOR_PALETTE[currentIndex]
-		CONFIG[configKey] = entry.Color
-		colorPreview.BackgroundColor3 = entry.Color
-		colorPreview.Text = entry.Name
-	end
-
-	btn.MouseButton1Click:Connect(function()
-		currentIndex = (currentIndex % #COLOR_PALETTE) + 1
-		applyColor()
-	end)
-
-	applyColor()
-end
-
--- Hàm tạo nút Gán Phím Tắt (Keybind)
-local function createKeybindButton(labelText, order)
-	local btn = Instance.new("TextButton")
-	btn.LayoutOrder = order
-	btn.Size = UDim2.new(1, 0, 0, 30)
-	btn.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
-	btn.Text = ""
-	btn.AutoButtonColor = false
-	btn.Parent = contentHolder
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 6)
-	corner.Parent = btn
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, -100, 1, 0)
-	label.Position = UDim2.fromOffset(10, 0)
-	label.BackgroundTransparency = 1
-	label.Text = labelText
-	label.TextColor3 = Color3.fromRGB(220, 220, 220)
-	label.Font = Enum.Font.GothamMedium
-	label.TextSize = 13
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Parent = btn
-
-	local keyBadge = Instance.new("TextLabel")
-	keyBadge.Size = UDim2.fromOffset(85, 20)
-	keyBadge.Position = UDim2.new(1, -93, 0.5, -10)
-	keyBadge.BackgroundColor3 = Color3.fromRGB(60, 60, 72)
-	keyBadge.Font = Enum.Font.GothamBold
-	keyBadge.TextSize = 11
-	keyBadge.TextColor3 = Color3.fromRGB(240, 240, 240)
-	keyBadge.Text = CONFIG.ToggleKey.Name
-	keyBadge.Parent = btn
-
-	local badgeCorner = Instance.new("UICorner")
-	badgeCorner.CornerRadius = UDim.new(0, 4)
-	badgeCorner.Parent = keyBadge
-
-	btn.MouseButton1Click:Connect(function()
-		if isBindingKey then return end
-		isBindingKey = true
-		keyBadge.Text = "[Nhấn phím...]"
-		keyBadge.BackgroundColor3 = Color3.fromRGB(230, 150, 0)
-		keyBadge.TextColor3 = Color3.fromRGB(20, 20, 20)
-	end)
-
-	-- Lắng nghe phím để gán hoặc đóng/mở Menu
-	UserInputService.InputBegan:Connect(function(input, gameProcessed)
-		if isBindingKey then
-			if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
-				-- Nhấn Escape để hủy đổi phím
-				if input.KeyCode ~= Enum.KeyCode.Escape then
-					CONFIG.ToggleKey = input.KeyCode
-					titleLabel.Text = CONFIG.MenuTitle .. " [" .. CONFIG.ToggleKey.Name .. "]"
-				end
-				keyBadge.Text = CONFIG.ToggleKey.Name
-				keyBadge.BackgroundColor3 = Color3.fromRGB(60, 60, 72)
-				keyBadge.TextColor3 = Color3.fromRGB(240, 240, 240)
-
-				task.defer(function()
-					isBindingKey = false
-				end)
+UIS.InputBegan:Connect(function(inp, gpe)
+	if bindingMenuKey then
+		if inp.UserInputType == Enum.UserInputType.Keyboard and inp.KeyCode ~= Enum.KeyCode.Unknown then
+			if inp.KeyCode ~= Enum.KeyCode.Escape then
+				CFG.Key = inp.KeyCode
+				titleLbl.Text = CFG.Title.." ["..CFG.Key.Name.."]"
 			end
-			return
+			kbBadge.Text, kbBadge.BackgroundColor3, kbBadge.TextColor3 = CFG.Key.Name, Color3.fromRGB(60, 60, 72), Color3.fromRGB(240, 240, 240)
+			task.defer(function() bindingMenuKey = false end)
 		end
-
-		if not gameProcessed and input.KeyCode == CONFIG.ToggleKey then
-			menuFrame.Visible = not menuFrame.Visible
+		return
+	elseif bindingAimKey then
+		if inp.UserInputType == Enum.UserInputType.Keyboard and inp.KeyCode ~= Enum.KeyCode.Unknown then
+			if inp.KeyCode ~= Enum.KeyCode.Escape then
+				CFG.AimBindType = "Key"
+				CFG.AimBind = inp.KeyCode
+			end
+			aimKeyBadge.Text, aimKeyBadge.BackgroundColor3, aimKeyBadge.TextColor3 = CFG.AimBind.Name, Color3.fromRGB(60, 60, 72), Color3.fromRGB(240, 240, 240)
+			task.defer(function() bindingAimKey = false end)
+		elseif inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.MouseButton2 or inp.UserInputType == Enum.UserInputType.MouseButton3 then
+			CFG.AimBindType = "Mouse"
+			CFG.AimBind = inp.UserInputType
+			aimKeyBadge.Text, aimKeyBadge.BackgroundColor3, aimKeyBadge.TextColor3 = CFG.AimBind.Name, Color3.fromRGB(60, 60, 72), Color3.fromRGB(240, 240, 240)
+			task.defer(function() bindingAimKey = false end)
 		end
-	end)
-end
+		return
+	end
 
--- Tạo các nút điều khiển
-createToggle("Bật toàn bộ ESP", "Enabled", 1)
-createToggle("Hiện Khung chữ nhật (Box)", "ShowBox", 2)
-createToggle("Hiện Tên, HP & Khoảng cách", "ShowInfo", 3)
-createToggle("Hiện Xương bộ phận (Que)", "ShowSkeleton", 4)
-createToggle("Màu khung tự đổi theo % HP", "ColorByHP", 5)
-
-createColorSelector("Màu Khung:", "BoxColor", 1, 6)
-createColorSelector("Màu Xương:", "SkeletonColor", 2, 7)
-createColorSelector("Màu Chữ:", "TextColor", 2, 8)
-createKeybindButton("Phím đóng/mở Menu:", 9)
+	if not gpe and inp.KeyCode == CFG.Key then
+		menu.Visible = not menu.Visible
+	end
+end)
 
 -- ==========================================
--- 3. HỆ THỐNG XỬ LÝ ESP (BOX, TEXT, SKELETON)
+-- XỬ LÝ ESP & AIMLOCK ĐỒNG BỘ KHUNG HÌNH
 -- ==========================================
-local R15_BONES = {
-	{"Head", "UpperTorso"},
-	{"UpperTorso", "LowerTorso"},
-	{"UpperTorso", "LeftUpperArm"},
-	{"LeftUpperArm", "LeftLowerArm"},
-	{"LeftLowerArm", "LeftHand"},
-	{"UpperTorso", "RightUpperArm"},
-	{"RightUpperArm", "RightLowerArm"},
-	{"RightLowerArm", "RightHand"},
-	{"LowerTorso", "LeftUpperLeg"},
-	{"LeftUpperLeg", "LeftLowerLeg"},
-	{"LeftLowerLeg", "LeftFoot"},
-	{"LowerTorso", "RightUpperLeg"},
-	{"RightUpperLeg", "RightLowerLeg"},
-	{"RightLowerLeg", "RightFoot"},
-}
+local R15 = {{"Head","UpperTorso"},{"UpperTorso","LowerTorso"},{"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},{"LeftLowerArm","LeftHand"},{"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},{"RightLowerArm","RightHand"},{"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},{"LeftLowerLeg","LeftFoot"},{"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"}}
+local R6 = {{"Head","Torso"},{"Torso","Left Arm"},{"Torso","Right Arm"},{"Torso","Left Leg"},{"Torso","Right Leg"},{"Torso","LeftArm"},{"Torso","RightArm"},{"Torso","LeftLeg"},{"Torso","RightLeg"}}
 
-local R6_BONES = {
-	{"Head", "Torso"},
-	{"Torso", "Left Arm"},
-	{"Torso", "Right Arm"},
-	{"Torso", "Left Leg"},
-	{"Torso", "Right Leg"},
-}
-
-local activeESP = {}
-
-local function createLine()
-	local line = Instance.new("Frame")
-	line.AnchorPoint = Vector2.new(0.5, 0.5)
-	line.BackgroundColor3 = CONFIG.SkeletonColor
-	line.BorderSizePixel = 0
-	line.Visible = false
-	line.Parent = espContainer
-	return line
-end
-
-local function updateLine(line, p1, p2, color)
-	local dx = p2.X - p1.X
-	local dy = p2.Y - p1.Y
-	local distance = math.sqrt(dx * dx + dy * dy)
-	local centerX = (p1.X + p2.X) / 2
-	local centerY = (p1.Y + p2.Y) / 2
-	local angle = math.deg(math.atan2(dy, dx))
-
-	line.Position = UDim2.fromOffset(centerX, centerY)
-	line.Size = UDim2.fromOffset(distance, CONFIG.SkeletonThickness)
-	line.Rotation = angle
-	line.BackgroundColor3 = color
-	line.Visible = true
-end
-
-local function removeESP(player)
-	local data = activeESP[player]
-	if data then
-		if data.BoxGui then data.BoxGui:Destroy() end
-		if data.InfoGui then data.InfoGui:Destroy() end
-		if data.Lines then
-			for _, line in ipairs(data.Lines) do
-				line:Destroy()
+local function getJoints(c)
+	local list = {}
+	if c:FindFirstChild("UpperTorso") then
+		for _, bp in ipairs(R15) do
+			local p1, p2 = c:FindFirstChild(bp[1]), c:FindFirstChild(bp[2])
+			if p1 and p2 then table.insert(list, {p1, p2}) end
+		end
+	elseif c:FindFirstChild("Torso") then
+		for _, bp in ipairs(R6) do
+			local p1, p2 = c:FindFirstChild(bp[1]), c:FindFirstChild(bp[2])
+			if p1 and p2 then table.insert(list, {p1, p2}) end
+		end
+	end
+	if #list == 0 then
+		for _, d in ipairs(c:GetDescendants()) do
+			if d:IsA("Motor6D") and d.Part0 and d.Part1 and d.Part0.Name ~= "HumanoidRootPart" and d.Part1.Name ~= "HumanoidRootPart" then
+				table.insert(list, {d.Part0, d.Part1})
 			end
 		end
-		activeESP[player] = nil
 	end
+	return list
 end
 
-local function createESP(player)
-	if player == localPlayer then return end
-	removeESP(player)
-
-	-- 1. Khung hình chữ nhật
-	local boxGui = Instance.new("BillboardGui")
-	boxGui.Name = player.Name .. "_Box"
-	boxGui.AlwaysOnTop = true
-	boxGui.Size = UDim2.new(4, 0, 5.5, 0)
-	boxGui.Parent = espContainer
-
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.new(1, 0, 1, 0)
-	frame.BackgroundTransparency = 1
-	frame.Parent = boxGui
-
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = CONFIG.BoxColor
-	stroke.Thickness = CONFIG.BoxThickness
-	stroke.Parent = frame
-
-	-- 2. Nhãn Tên, HP và Khoảng cách
-	local infoGui = Instance.new("BillboardGui")
-	infoGui.Name = player.Name .. "_Info"
-	infoGui.AlwaysOnTop = true
-	infoGui.Size = UDim2.new(0, 200, 0, 40)
-	infoGui.StudsOffset = Vector3.new(0, 3.5, 0)
-	infoGui.Parent = espContainer
-
-	local textLabel = Instance.new("TextLabel")
-	textLabel.Size = UDim2.new(1, 0, 1, 0)
-	textLabel.BackgroundTransparency = 1
-	textLabel.TextColor3 = CONFIG.TextColor
-	textLabel.TextStrokeTransparency = 0.2
-	textLabel.Font = Enum.Font.GothamBold
-	textLabel.TextSize = CONFIG.TextSize
-	textLabel.Text = ""
-	textLabel.Parent = infoGui
-
-	-- 3. Các thanh que nối xương
-	local lines = {}
-	for i = 1, #R15_BONES do
-		table.insert(lines, createLine())
-	end
-
-	activeESP[player] = {
-		BoxGui = boxGui,
-		InfoGui = infoGui,
-		Label = textLabel,
-		Stroke = stroke,
-		Lines = lines,
-	}
-end
-
--- Vòng lặp cập nhật ESP mỗi khung hình
-RunService.RenderStepped:Connect(function()
-	camera = Workspace.CurrentCamera
-	local myChar = localPlayer.Character
-	local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-
-	for player, data in pairs(activeESP) do
-		local char = player.Character
-		local root = char and char:FindFirstChild("HumanoidRootPart")
-		local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-
-		if CONFIG.Enabled and char and root and humanoid and humanoid.Health > 0 then
-			-- Xử lý Khung chữ nhật (Box)
-			data.BoxGui.Adornee = root
-			data.BoxGui.Enabled = CONFIG.ShowBox
-
-			if CONFIG.ColorByHP then
-				local hpPercent = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
-				data.Stroke.Color = Color3.fromHSV(hpPercent * 0.33, 1, 1)
-			else
-				data.Stroke.Color = CONFIG.BoxColor
-			end
-
-			-- Xử lý Thông tin chữ (Tên, HP, Khoảng cách)
-			data.InfoGui.Adornee = root
-			data.InfoGui.Enabled = CONFIG.ShowInfo
-
-			if CONFIG.ShowInfo then
-				local currentHP = math.floor(humanoid.Health)
-				local maxHP = math.floor(humanoid.MaxHealth)
-				local distance = myRoot and math.floor((myRoot.Position - root.Position).Magnitude) or 0
-
-				data.Label.TextColor3 = CONFIG.TextColor
-				data.Label.Text = string.format(
-					"%s\nHP: %d/%d | %dm",
-					player.DisplayName,
-					currentHP,
-					maxHP,
-					distance
-				)
-			end
-
-			-- Xử lý ESP Que (Skeleton)
-			if CONFIG.ShowSkeleton then
-				local boneList = (humanoid.RigType == Enum.HumanoidRigType.R15) and R15_BONES or R6_BONES
-				for i, line in ipairs(data.Lines) do
-					local bonePair = boneList[i]
-					if bonePair then
-						local part1 = char:FindFirstChild(bonePair[1])
-						local part2 = char:FindFirstChild(bonePair[2])
-
-						if part1 and part2 then
-							local pos1, onScreen1 = camera:WorldToViewportPoint(part1.Position)
-							local pos2, onScreen2 = camera:WorldToViewportPoint(part2.Position)
-
-							if (onScreen1 or onScreen2) and pos1.Z > 0 and pos2.Z > 0 then
-								updateLine(line, pos1, pos2, CONFIG.SkeletonColor)
-							else
-								line.Visible = false
-							end
-						else
-							line.Visible = false
-						end
-					else
-						line.Visible = false
+local function getTargetPart(char, refPos)
+	local mode = AIM_PARTS[CFG.AimPartMode].Mode
+	if mode == "Head" then
+		return char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+	elseif mode == "Torso" then
+		return char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("HumanoidRootPart")
+	elseif mode == "Leg" then
+		return char:FindFirstChild("LeftLowerLeg") or char:FindFirstChild("Left Leg") or char:FindFirstChild("LowerTorso") or char:FindFirstChild("Torso")
+	elseif mode == "Closest" then
+		local bestPart, bestDist = nil, math.huge
+		local candidates = {"Head", "UpperTorso", "Torso", "LowerTorso", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg"}
+		for _, name in ipairs(candidates) do
+			local p = char:FindFirstChild(name)
+			if p then
+				local v, onScreen = cam:WorldToViewportPoint(p.Position)
+				if onScreen and v.Z > 0 then
+					local dist = (Vector2.new(v.X, v.Y) - refPos).Magnitude
+					if dist < bestDist then
+						bestDist, bestPart = dist, p
 					end
 				end
-			else
-				for _, line in ipairs(data.Lines) do
-					line.Visible = false
+			end
+		end
+		return bestPart
+	end
+end
+
+local function isAimKeyPressed()
+	if bindingAimKey or bindingMenuKey then return false end
+	if CFG.AimBindType == "Mouse" then
+		return UIS:IsMouseButtonPressed(CFG.AimBind)
+	else
+		return UIS:IsKeyDown(CFG.AimBind)
+	end
+end
+
+local function delESP(p)
+	if active[p] then
+		active[p].B:Destroy()
+		active[p].I:Destroy()
+		for _, l in ipairs(active[p].L) do l:Destroy() end
+		active[p] = nil
+	end
+end
+
+local function addESP(p)
+	if p == lp then return end
+	delESP(p)
+	local bGui = N("BillboardGui", {AlwaysOnTop = true, Size = UDim2.new(4, 0, 5.5, 0), Parent = folder})
+	local st = N("UIStroke", {Color = CFG.BoxColor, Thickness = 1.5, Parent = N("Frame", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Parent = bGui})})
+	local iGui = N("BillboardGui", {AlwaysOnTop = true, Size = UDim2.fromOffset(200, 40), StudsOffset = Vector3.new(0, 3.5, 0), Parent = folder})
+	local lbl = N("TextLabel", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, TextStrokeTransparency = 0.2, Font = Enum.Font.GothamBold, TextSize = 13, Parent = iGui})
+	local lines = {}
+	for i = 1, 20 do lines[i] = N("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, ZIndex = 5, Visible = false, Parent = folder}) end
+	active[p] = {B = bGui, I = iGui, Lbl = lbl, St = st, L = lines}
+end
+
+-- Chạy ở RenderPriority.Camera.Value + 10 để lấy đúng Camera sau khi game cập nhật
+RS:BindToRenderStep("GiangLiet_Render", Enum.RenderPriority.Camera.Value + 10, function()
+	cam = W.CurrentCamera
+	if not cam then return end
+
+	-- Nếu chuột bị khóa tâm (First Person / Shiftlock / ADS), lấy tâm màn hình hoặc vị trí chuột
+	local mousePos = UIS:GetMouseLocation()
+	fovCircle.Visible = CFG.ShowFOV
+	fovCircle.Position = UDim2.fromOffset(mousePos.X, mousePos.Y)
+	fovCircle.Size = UDim2.fromOffset(CFG.FOVRadius * 2, CFG.FOVRadius * 2)
+	fovStroke.Color = CFG.FOVColor
+
+	local myChar = lp.Character
+	local myR = myChar and (myChar:FindFirstChild("HumanoidRootPart") or myChar.PrimaryPart or myChar:FindFirstChildWhichIsA("BasePart"))
+
+	-- BƯỚC 1: TÌM MỤC TIÊU AIMLOCK VÀ KHÓA TÂM TRƯỚC KHI VẼ ESP
+	if CFG.AimEnabled and isAimKeyPressed() then
+		local closestAimPart, closestScreenPos = nil, nil
+		local shortestFovDist = CFG.FOVRadius
+
+		for p, _ in pairs(active) do
+			local c = p.Character
+			local r = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso") or c:FindFirstChild("UpperTorso") or c.PrimaryPart)
+			local h = c and c:FindFirstChildOfClass("Humanoid")
+			local alive = (h and h.Health > 0) or (not h and r ~= nil)
+
+			if c and r and alive then
+				local tp = getTargetPart(c, mousePos)
+				if tp then
+					local v, onScreen = cam:WorldToViewportPoint(tp.Position)
+					if onScreen and v.Z > 0 then
+						local screenPt = Vector2.new(v.X, v.Y)
+						local dist = (screenPt - mousePos).Magnitude
+						if dist <= shortestFovDist then
+							shortestFovDist = dist
+							closestAimPart = tp
+							closestScreenPos = screenPt
+						end
+					end
 				end
 			end
-		else
-			-- Ẩn tất cả khi tắt ESP hoặc nhân vật không hợp lệ
-			data.BoxGui.Enabled = false
-			data.InfoGui.Enabled = false
-			for _, line in ipairs(data.Lines) do
-				line.Visible = false
+		end
+
+		if closestAimPart and closestScreenPos then
+			local factor = CFG.AimSpeed / 10
+			if CFG.AimMethod == 1 and typeof(mousemoverel) == "function" then
+				-- Kiểu 1: Dịch chuyển chuột thực tế -> Tay cầm súng, nòng súng và Camera quay cùng nhau 100%
+				local dx = (closestScreenPos.X - mousePos.X) * factor
+				local dy = (closestScreenPos.Y - mousePos.Y) * factor
+				mousemoverel(dx, dy)
+			else
+				-- Kiểu 2: Xoay đồng thời cả Camera và thân nhân vật (HumanoidRootPart) để tay súng hướng theo
+				local targetCFrame = CFrame.new(cam.CFrame.Position, closestAimPart.Position)
+				cam.CFrame = cam.CFrame:Lerp(targetCFrame, factor)
+				if myR then
+					local flatTarget = Vector3.new(closestAimPart.Position.X, myR.Position.Y, closestAimPart.Position.Z)
+					if (flatTarget - myR.Position).Magnitude > 0.1 then
+						myR.CFrame = myR.CFrame:Lerp(CFrame.new(myR.Position, flatTarget), factor)
+					end
+				end
 			end
+		end
+	end
+
+	-- BƯỚC 2: VẼ ESP SAU KHI CAMERA ĐÃ CỐ ĐỊNH (ĐẢM BẢO XƯƠNG QUE VÀ BOX KHỚP 100%)
+	for p, d in pairs(active) do
+		local c = p.Character
+		local r = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso") or c:FindFirstChild("UpperTorso") or c.PrimaryPart)
+		local h = c and c:FindFirstChildOfClass("Humanoid")
+		local alive = (h and h.Health > 0) or (not h and r ~= nil)
+
+		if CFG.Enabled and c and r and alive then
+			local hp, maxHp = h and h.Health or 100, (h and h.MaxHealth > 0) and h.MaxHealth or 100
+			d.B.Adornee, d.B.Enabled = r, CFG.ShowBox
+			d.St.Color = CFG.ColorByHP and Color3.fromHSV(math.clamp(hp / maxHp, 0, 1) * 0.33, 1, 1) or CFG.BoxColor
+			d.I.Adornee, d.I.Enabled = r, CFG.ShowInfo
+			if CFG.ShowInfo then
+				d.Lbl.TextColor3 = CFG.TextColor
+				d.Lbl.Text = string.format("%s\nHP: %d/%d | %dm", p.DisplayName, hp, maxHp, myR and (myR.Position - r.Position).Magnitude or 0)
+			end
+			if CFG.ShowSkeleton then
+				local joints = getJoints(c)
+				for i, ln in ipairs(d.L) do
+					local pair = joints[i]
+					if pair then
+						local v1, s1 = cam:WorldToViewportPoint(pair[1].Position)
+						local v2, s2 = cam:WorldToViewportPoint(pair[2].Position)
+						if (s1 or s2) and v1.Z > 0 and v2.Z > 0 then
+							local dx, dy = v2.X - v1.X, v2.Y - v1.Y
+							ln.Position = UDim2.fromOffset((v1.X + v2.X) / 2, (v1.Y + v2.Y) / 2)
+							ln.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 1.5)
+							ln.Rotation = math.deg(math.atan2(dy, dx))
+							ln.BackgroundColor3 = CFG.SkeletonColor
+							ln.Visible = true
+						else ln.Visible = false end
+					else ln.Visible = false end
+				end
+			else
+				for _, ln in ipairs(d.L) do ln.Visible = false end
+			end
+		else
+			d.B.Enabled, d.I.Enabled = false, false
+			for _, ln in ipairs(d.L) do ln.Visible = false end
 		end
 	end
 end)
 
--- Gắn ESP cho người chơi hiện tại và người chơi mới
-for _, player in ipairs(Players:GetPlayers()) do
-	createESP(player)
-end
-
-Players.PlayerAdded:Connect(createESP)
-Players.PlayerRemoving:Connect(removeESP)
+for _, p in ipairs(P:GetPlayers()) do addESP(p) end
+P.PlayerAdded:Connect(addESP)
+P.PlayerRemoving:Connect(delESP)
